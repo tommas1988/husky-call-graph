@@ -6,7 +6,8 @@ public class CallGraphTest {
     public static void bar() {}
 
     public static void main(String[] args) {
-        CallGraphTest o = new CallGraphTest();
-        o.foo();
+        MethodCallRecorder.context.methodName = "test";
+        /*CallGraphTest o = new CallGraphTest();
+        o.foo();*/
     }
 }
