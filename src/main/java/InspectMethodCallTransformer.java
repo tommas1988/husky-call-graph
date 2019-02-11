@@ -1,5 +1,6 @@
 
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.tree.*;
 import org.objectweb.asm.util.TraceClassVisitor;
@@ -9,6 +10,8 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.IllegalClassFormatException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.security.ProtectionDomain;
 import java.util.Iterator;
 
@@ -50,13 +53,13 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
         cr.accept(classNode, ClassReader.SKIP_FRAMES);
 
         for (MethodNode methodNode : classNode.methods) {
-            injectInspector(methodNode, classNode.name);
+            injectInspector(methodNode);
         }
 
         return classNode;
     }
 
-    private void injectInspector(MethodNode methodNode, String className) {
+    private void injectInspector(MethodNode methodNode) {
         InsnList insnList = methodNode.instructions;
         Iterator<AbstractInsnNode> iterator = insnList.iterator();
         int lineNumber = -1;
@@ -69,19 +72,20 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
                 continue;
             }
 
-
             if (insnNode instanceof MethodInsnNode) {
+                MethodInsnNode methodInsnNode = (MethodInsnNode) insnNode;
+
                 InsnList il = new InsnList();
                 il.add(new MethodInsnNode(INVOKESTATIC, "MethodContextStack",
                         "newContext", "()LMethodContext;", false));
 
                 il.add(new InsnNode(DUP));
-                il.add(new LdcInsnNode(className));
+                il.add(new LdcInsnNode(methodInsnNode.owner));
                 il.add(new FieldInsnNode(PUTFIELD, "MethodContext",
                         "className", "Ljava/lang/String;"));
 
                 il.add(new InsnNode(DUP));
-                il.add(new LdcInsnNode(methodNode.name));
+                il.add(new LdcInsnNode(methodInsnNode.name));
                 il.add(new FieldInsnNode(PUTFIELD, "MethodContext",
                         "methodName", "Ljava/lang/String;"));
 
@@ -98,7 +102,13 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
                 il.add(new MethodInsnNode(INVOKESTATIC, "MethodCallRecorder",
                         "record", "()V", false));
 
-                insnList.insert(insnNode.getPrevious(), il);
+                if ("<init>".equals(methodInsnNode.name)) {
+                    insnList.insert(insnNode.getPrevious().getPrevious().getPrevious(), il);
+                } else {
+                    insnList.insert(insnNode.getPrevious(), il);
+                }
+
+                methodNode.maxStack += 2;
 
                 continue;
             }
@@ -145,16 +155,43 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
         }
     }
 
-    public static void main(String[] args) throws IOException {
-        String classFile = args[0];
+    public static void main(String[] args) throws IOException, NoSuchMethodException,
+            IllegalAccessException, InvocationTargetException {
+        String classFile;
+        boolean debug = false;
+        if ("-debug".equals(args[0])) {
+            classFile = args[1];
+            debug = true;
+        } else {
+            classFile = args[0];
+        }
+
         ClassReader cr = new ClassReader(new FileInputStream(classFile));
         ClassWriter cw = new ClassWriter(cr, 0);
         cr.accept(cw, 0);
         byte[] classfileBuffer = cw.toByteArray();
 
         InspectMethodCallTransformer transformer = new InspectMethodCallTransformer();
-        TraceClassVisitor cv = new TraceClassVisitor(new PrintWriter(System.out));
+
+        ClassVisitor cv;
+        if (debug) {
+            cv = new ClassWriter(0);
+        } else {
+            cv = new TraceClassVisitor(cw, new PrintWriter(System.out));
+        }
         ClassNode classNode = transformer.byte2ClassNode(classfileBuffer);
         classNode.accept(cv);
+
+        if (!debug) return;
+
+        classfileBuffer = ((ClassWriter) cv).toByteArray();
+        class TransformerClassLoader extends ClassLoader {
+            public Class defineClass(String name, byte[] classfileBuffer) {
+                return defineClass(name, classfileBuffer, 0, classfileBuffer.length);
+            }
+        }
+        Class clazz = (new TransformerClassLoader()).defineClass("CallGraphTest", classfileBuffer);
+        Method method = clazz.getMethod("main");
+        method.invoke(null);
     }
 }

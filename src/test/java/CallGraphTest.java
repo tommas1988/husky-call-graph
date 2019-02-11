@@ -1,4 +1,9 @@
 public class CallGraphTest {
+    private String arg;
+    public CallGraphTest(String arg) {
+        this.arg = arg;
+    }
+
     public void foo() {
         try {
             bar();
@@ -20,7 +25,7 @@ public class CallGraphTest {
     }
 
     public static void main(String[] args) {
-        CallGraphTest o = new CallGraphTest();
+        CallGraphTest o = new CallGraphTest("arg");
         o.foo();
     }
 }
