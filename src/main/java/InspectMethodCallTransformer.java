@@ -103,7 +103,13 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
                         "record", "()V", false));
 
                 if ("<init>".equals(methodInsnNode.name)) {
-                    insnList.insert(insnNode.getPrevious().getPrevious().getPrevious(), il);
+                    AbstractInsnNode typeInsnNode = insnNode.getPrevious();
+                    while (typeInsnNode instanceof TypeInsnNode &&
+                            typeInsnNode.getOpcode() == NEW &&
+                            methodInsnNode.owner.equals(((TypeInsnNode) typeInsnNode).desc))
+                        break;
+
+                    insnList.insert(typeInsnNode.getPrevious(), il);
                 } else {
                     insnList.insert(insnNode.getPrevious(), il);
                 }
