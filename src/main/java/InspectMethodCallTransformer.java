@@ -63,12 +63,18 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
         InsnList insnList = methodNode.instructions;
         Iterator<AbstractInsnNode> iterator = insnList.iterator();
         int lineNumber = -1;
+        TypeInsnNode newInsn = null;
         while (iterator.hasNext()) {
             AbstractInsnNode insnNode = iterator.next();
             int opcode = insnNode.getOpcode();
 
             if (insnNode instanceof LineNumberNode) {
                 lineNumber = ((LineNumberNode) insnNode).line;
+                continue;
+            }
+
+            if (insnNode instanceof TypeInsnNode) {
+                newInsn = (TypeInsnNode) insnNode;
                 continue;
             }
 
@@ -102,19 +108,14 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
                 il.add(new MethodInsnNode(INVOKESTATIC, "MethodCallRecorder",
                         "record", "()V", false));
 
-                if ("<init>".equals(methodInsnNode.name)) {
-                    AbstractInsnNode typeInsnNode = insnNode.getPrevious();
-                    while (typeInsnNode instanceof TypeInsnNode &&
-                            typeInsnNode.getOpcode() == NEW &&
-                            methodInsnNode.owner.equals(((TypeInsnNode) typeInsnNode).desc))
-                        break;
-
-                    insnList.insert(typeInsnNode.getPrevious(), il);
+                if ("<init>".equals(methodInsnNode.name) && newInsn != null) {
+                    insnList.insert(newInsn.getPrevious(), il);
+                    newInsn = null;
                 } else {
                     insnList.insert(insnNode.getPrevious(), il);
                 }
 
-                methodNode.maxStack += 2;
+                /*methodNode.maxStack += 2;*/
 
                 continue;
             }
@@ -135,7 +136,6 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
             if (tryCatchBlock.type == null) continue;
 
             if (!hasExceptionHandler) {
-                methodNode.maxLocals++;
                 hasExceptionHandler = true;
             }
 
@@ -156,7 +156,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
             InsnList il = new InsnList();
             il.add(new FieldInsnNode(GETSTATIC, "MethodContextStack",
                     "TOP", "LMethodContext;"));
-            il.add(new VarInsnNode(ASTORE, methodNode.maxLocals));
+            il.add(new VarInsnNode(ASTORE, methodNode.maxLocals + 1));
             insnList.insert(il);
         }
     }
@@ -181,7 +181,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
 
         ClassVisitor cv;
         if (debug) {
-            cv = new ClassWriter(0);
+            cv = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         } else {
             cv = new TraceClassVisitor(cw, new PrintWriter(System.out));
         }
