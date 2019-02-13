@@ -106,7 +106,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
                         "lineNumber", "I"));
 
                 il.add(new MethodInsnNode(INVOKESTATIC, "MethodCallRecorder",
-                        "record", "()V", false));
+                        "record", "(LMethodContext;)V", false));
 
                 if ("<init>".equals(methodInsnNode.name) && newInsn != null) {
                     insnList.insert(newInsn.getPrevious(), il);
@@ -114,8 +114,6 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
                 } else {
                     insnList.insert(insnNode.getPrevious(), il);
                 }
-
-                /*methodNode.maxStack += 2;*/
 
                 continue;
             }
@@ -197,7 +195,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
             }
         }
         Class clazz = (new TransformerClassLoader()).defineClass("CallGraphTest", classfileBuffer);
-        Method method = clazz.getMethod("main");
-        method.invoke(null);
+        Method method = clazz.getMethod("main", String[].class);
+        method.invoke(null, (Object) args);
     }
 }
