@@ -1,4 +1,5 @@
 
+import com.sun.org.apache.bcel.internal.classfile.LocalVariable;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
@@ -14,6 +15,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.ProtectionDomain;
 import java.util.Iterator;
+import java.util.List;
 
 import static org.objectweb.asm.Opcodes.*;
 
@@ -64,9 +66,19 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
         Iterator<AbstractInsnNode> iterator = insnList.iterator();
         int lineNumber = -1;
         TypeInsnNode newInsn = null;
+        boolean hasMethodInsn = false;
+        LabelNode firstLabel = null, lastLabel = null;
         while (iterator.hasNext()) {
             AbstractInsnNode insnNode = iterator.next();
             int opcode = insnNode.getOpcode();
+
+            if (insnNode instanceof LabelNode) {
+                if (firstLabel == null) {
+                    firstLabel = (LabelNode) insnNode;
+                }
+                lastLabel = (LabelNode) insnNode;
+                continue;
+            }
 
             if (insnNode instanceof LineNumberNode) {
                 lineNumber = ((LineNumberNode) insnNode).line;
@@ -79,6 +91,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
             }
 
             if (insnNode instanceof MethodInsnNode) {
+                hasMethodInsn = true;
                 MethodInsnNode methodInsnNode = (MethodInsnNode) insnNode;
 
                 InsnList il = new InsnList();
@@ -126,6 +139,9 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
             }
         }
 
+        /*if (hasMethodInsn)
+            methodNode.maxStack += 4;*/
+
         if (methodNode.tryCatchBlocks.size() == 0)
             return;
 
@@ -134,6 +150,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
             if (tryCatchBlock.type == null) continue;
 
             if (!hasExceptionHandler) {
+                /*methodNode.maxLocals++;*/
                 hasExceptionHandler = true;
             }
 
@@ -146,15 +163,23 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
             InsnList il = new InsnList();
             il.add(new VarInsnNode(ALOAD, methodNode.maxLocals));
             il.add(new MethodInsnNode(INVOKESTATIC, "MethodContextStack",
-                    "resetTop", "()V", false));
+                    "resetTop", "(LMethodContext;)V", false));
             insnList.insert(insnNode, il);
         }
 
         if (hasExceptionHandler) {
+            List<LocalVariableNode> variables = methodNode.localVariables;
+            variables.add(new LocalVariableNode("_methodContext",
+                    "LMethodContext;",
+                    null,
+                    firstLabel,
+                    lastLabel,
+                    methodNode.maxLocals));
+
             InsnList il = new InsnList();
             il.add(new FieldInsnNode(GETSTATIC, "MethodContextStack",
-                    "TOP", "LMethodContext;"));
-            il.add(new VarInsnNode(ASTORE, methodNode.maxLocals + 1));
+                    "top", "LMethodContext;"));
+            il.add(new VarInsnNode(ASTORE, methodNode.maxLocals));
             insnList.insert(il);
         }
     }
@@ -172,14 +197,14 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
 
         ClassReader cr = new ClassReader(new FileInputStream(classFile));
         ClassWriter cw = new ClassWriter(cr, 0);
-        cr.accept(cw, 0);
+        cr.accept(cw, ClassReader.SKIP_FRAMES);
         byte[] classfileBuffer = cw.toByteArray();
 
         InspectMethodCallTransformer transformer = new InspectMethodCallTransformer();
 
         ClassVisitor cv;
         if (debug) {
-            cv = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+            cv = new ClassWriter(/*ClassWriter.COMPUTE_FRAMES | */ClassWriter.COMPUTE_MAXS);
         } else {
             cv = new TraceClassVisitor(cw, new PrintWriter(System.out));
         }

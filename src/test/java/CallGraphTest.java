@@ -5,17 +5,17 @@ public class CallGraphTest {
     }
 
     public void foo() {
-        bar();
-        /*int i = intFunc();
+        /*bar();
+        int i = intFunc();
         System.out.println(i);*/
 
-        /*try {
+        try {
             bar();
         } catch (RuntimeException e) {
             System.out.println("RuntimeException");
         } catch (Exception e) {
             System.out.println("Exception");
-        }*/
+        }
     }
 
     public static void bar() {
