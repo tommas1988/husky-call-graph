@@ -1,5 +1,5 @@
+package org.husky;
 
-import com.sun.org.apache.bcel.internal.classfile.LocalVariable;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
@@ -19,7 +19,10 @@ import java.util.List;
 
 import static org.objectweb.asm.Opcodes.*;
 
-public class InspectMethodCallTransformer implements ClassFileTransformer {
+public class MonitorMethodCallTransformer implements ClassFileTransformer {
+    private static final String METHOD_CALL_CONTEXT_STACK_NAME = "org/husky/MethodCallContextStack";
+    private static final String METHOD_CALL_CONTEXT_NAME = METHOD_CALL_CONTEXT_STACK_NAME + "$MethodCallContext";
+
     private static final ThreadLocal<Boolean> transforming = new ThreadLocal<Boolean>() {
         @Override
         protected Boolean initialValue() {
@@ -66,7 +69,6 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
         Iterator<AbstractInsnNode> iterator = insnList.iterator();
         int lineNumber = -1;
         TypeInsnNode newInsn = null;
-        boolean hasMethodInsn = false;
         LabelNode firstLabel = null, lastLabel = null;
         while (iterator.hasNext()) {
             AbstractInsnNode insnNode = iterator.next();
@@ -91,11 +93,10 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
             }
 
             if (insnNode instanceof MethodInsnNode) {
-                hasMethodInsn = true;
                 MethodInsnNode methodInsnNode = (MethodInsnNode) insnNode;
 
                 InsnList il = new InsnList();
-                il.add(new MethodInsnNode(INVOKESTATIC, "MethodContextStack",
+                il.add(new MethodInsnNode(INVOKESTATIC, "org.husky.MethodCallContextStack",
                         "newContext", "()LMethodContext;", false));
 
                 il.add(new InsnNode(DUP));
@@ -118,7 +119,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
                 il.add(new FieldInsnNode(PUTFIELD, "MethodContext",
                         "lineNumber", "I"));
 
-                il.add(new MethodInsnNode(INVOKESTATIC, "MethodCallRecorder",
+                il.add(new MethodInsnNode(INVOKESTATIC, "org.husky.MethodCallRecorder",
                         "record", "(LMethodContext;)V", false));
 
                 if ("<init>".equals(methodInsnNode.name) && newInsn != null) {
@@ -133,7 +134,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
 
             if (opcode >= IRETURN && opcode <= RETURN) {
                 InsnList il = new InsnList();
-                il.add(new MethodInsnNode(INVOKESTATIC, "MethodContextStack",
+                il.add(new MethodInsnNode(INVOKESTATIC, "org.husky.MethodCallContextStack",
                         "pop", "()V", false));
                 insnList.insert(insnNode.getPrevious(), il);
             }
@@ -162,7 +163,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
 
             InsnList il = new InsnList();
             il.add(new VarInsnNode(ALOAD, methodNode.maxLocals));
-            il.add(new MethodInsnNode(INVOKESTATIC, "MethodContextStack",
+            il.add(new MethodInsnNode(INVOKESTATIC, "org.husky.MethodCallContextStack",
                     "resetTop", "(LMethodContext;)V", false));
             insnList.insert(insnNode, il);
         }
@@ -177,7 +178,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
                     methodNode.maxLocals));
 
             InsnList il = new InsnList();
-            il.add(new FieldInsnNode(GETSTATIC, "MethodContextStack",
+            il.add(new FieldInsnNode(GETSTATIC, "org.husky.MethodCallContextStack",
                     "top", "LMethodContext;"));
             il.add(new VarInsnNode(ASTORE, methodNode.maxLocals));
             insnList.insert(il);
@@ -200,7 +201,7 @@ public class InspectMethodCallTransformer implements ClassFileTransformer {
         cr.accept(cw, ClassReader.SKIP_FRAMES);
         byte[] classfileBuffer = cw.toByteArray();
 
-        InspectMethodCallTransformer transformer = new InspectMethodCallTransformer();
+        MonitorMethodCallTransformer transformer = new MonitorMethodCallTransformer();
 
         ClassVisitor cv;
         if (debug) {
