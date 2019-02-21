@@ -20,8 +20,7 @@ import java.util.List;
 import static org.objectweb.asm.Opcodes.*;
 
 public class MonitorMethodCallTransformer implements ClassFileTransformer {
-    private static final String METHOD_CALL_CONTEXT_STACK_NAME = "org/husky/MethodCallContextStack";
-    private static final String METHOD_CALL_CONTEXT_NAME = METHOD_CALL_CONTEXT_STACK_NAME + "$MethodCallContext";
+    private static final String METHOD_CALL_CONTEXT_NAME = "org/husky/MethodCallContext";
 
     private static final ThreadLocal<Boolean> transforming = new ThreadLocal<Boolean>() {
         @Override
@@ -95,32 +94,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
             if (insnNode instanceof MethodInsnNode) {
                 MethodInsnNode methodInsnNode = (MethodInsnNode) insnNode;
 
-                InsnList il = new InsnList();
-                il.add(new MethodInsnNode(INVOKESTATIC, "org.husky.MethodCallContextStack",
-                        "newContext", "()LMethodContext;", false));
-
-                il.add(new InsnNode(DUP));
-                il.add(new LdcInsnNode(methodInsnNode.owner));
-                il.add(new FieldInsnNode(PUTFIELD, "MethodContext",
-                        "className", "Ljava/lang/String;"));
-
-                il.add(new InsnNode(DUP));
-                il.add(new LdcInsnNode(methodInsnNode.name));
-                il.add(new FieldInsnNode(PUTFIELD, "MethodContext",
-                        "methodName", "Ljava/lang/String;"));
-
-                il.add(new InsnNode(DUP));
-                il.add(new LdcInsnNode(opcode));
-                il.add(new FieldInsnNode(PUTFIELD, "MethodContext",
-                        "methodType", "I"));
-
-                il.add(new InsnNode(DUP));
-                il.add(new LdcInsnNode(Integer.valueOf(lineNumber)));
-                il.add(new FieldInsnNode(PUTFIELD, "MethodContext",
-                        "lineNumber", "I"));
-
-                il.add(new MethodInsnNode(INVOKESTATIC, "org.husky.MethodCallRecorder",
-                        "record", "(LMethodContext;)V", false));
+                InsnList il = recordContextInsnList(methodInsnNode.owner, methodInsnNode.name, opcode, lineNumber);
 
                 if ("<init>".equals(methodInsnNode.name) && newInsn != null) {
                     insnList.insert(newInsn.getPrevious(), il);
@@ -129,14 +103,20 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                     insnList.insert(insnNode.getPrevious(), il);
                 }
 
+                il = destroyContextInsnList();
+                insnList.insert(insnNode, il);
+
                 continue;
             }
 
-            if (opcode >= IRETURN && opcode <= RETURN) {
-                InsnList il = new InsnList();
-                il.add(new MethodInsnNode(INVOKESTATIC, "org.husky.MethodCallContextStack",
-                        "pop", "()V", false));
+            if (insnNode instanceof InvokeDynamicInsnNode) {
+                InvokeDynamicInsnNode invokeDynamicInsnNode = (InvokeDynamicInsnNode) insnNode;
+                InsnList il = recordContextInsnList("", invokeDynamicInsnNode.name, opcode, lineNumber);
                 insnList.insert(insnNode.getPrevious(), il);
+                il = destroyContextInsnList();
+                insnList.insert(insnNode, il);
+
+                continue;
             }
         }
 
@@ -163,26 +143,49 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
 
             InsnList il = new InsnList();
             il.add(new VarInsnNode(ALOAD, methodNode.maxLocals));
-            il.add(new MethodInsnNode(INVOKESTATIC, "org.husky.MethodCallContextStack",
-                    "resetTop", "(LMethodContext;)V", false));
+            il.add(new MethodInsnNode(INVOKESTATIC, METHOD_CALL_CONTEXT_NAME,
+                    "setCurrentContext", "(L" + METHOD_CALL_CONTEXT_NAME + ";)V", false));
             insnList.insert(insnNode, il);
         }
 
         if (hasExceptionHandler) {
             List<LocalVariableNode> variables = methodNode.localVariables;
-            variables.add(new LocalVariableNode("_methodContext",
-                    "LMethodContext;",
+            variables.add(new LocalVariableNode("__methodContext__",
+                    "L" + METHOD_CALL_CONTEXT_NAME + ";",
                     null,
                     firstLabel,
                     lastLabel,
                     methodNode.maxLocals));
 
             InsnList il = new InsnList();
-            il.add(new FieldInsnNode(GETSTATIC, "org.husky.MethodCallContextStack",
-                    "top", "LMethodContext;"));
+            il.add(new MethodInsnNode(INVOKESTATIC, METHOD_CALL_CONTEXT_NAME,
+                    "getCurrentContext", "()L" + METHOD_CALL_CONTEXT_NAME + ";", false));
             il.add(new VarInsnNode(ASTORE, methodNode.maxLocals));
             insnList.insert(il);
         }
+    }
+
+    private InsnList recordContextInsnList(String owner, String name, int opcode, int line) {
+        InsnList il = new InsnList();
+        il.add(new LdcInsnNode(owner));
+        il.add(new LdcInsnNode(name));
+        il.add(new LdcInsnNode(MethodCallContext.getMethodType(opcode, name)));
+        il.add(new LdcInsnNode(Integer.valueOf(line)));
+        il.add(new MethodInsnNode(INVOKESTATIC, METHOD_CALL_CONTEXT_NAME,
+                "createContext", "()L" + METHOD_CALL_CONTEXT_NAME + ";", false));
+
+        il.add(new MethodInsnNode(INVOKEVIRTUAL, METHOD_CALL_CONTEXT_NAME,
+                "record", "(L" + METHOD_CALL_CONTEXT_NAME + ";)V", false));
+
+        return il;
+    }
+
+    private InsnList destroyContextInsnList() {
+        InsnList il = new InsnList();
+        il.add(new MethodInsnNode(INVOKESTATIC, METHOD_CALL_CONTEXT_NAME,
+                "destroyCurrentContext", "()V", false));
+
+        return il;
     }
 
     public static void main(String[] args) throws IOException, NoSuchMethodException,
