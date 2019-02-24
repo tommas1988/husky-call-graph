@@ -10,7 +10,7 @@ public class MethodCallContext {
     public static final int INIT = 0;
     public static final int CINIT = 1;
     public static final int INSTANCE = 2;
-    public static final int STATIC =3;
+    public static final int STATIC = 3;
     public static final int LAMBDA = 4;
 
     private final int id;
