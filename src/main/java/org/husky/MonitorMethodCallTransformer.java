@@ -4,6 +4,7 @@ import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.tree.*;
+import org.objectweb.asm.util.CheckClassAdapter;
 import org.objectweb.asm.util.TraceClassVisitor;
 
 import java.io.FileInputStream;
@@ -35,14 +36,17 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                      ProtectionDomain protectionDomain,
                      byte[] classfileBuffer)
             throws IllegalClassFormatException {
+        if (className.startsWith("java/lang/"))
+            return classfileBuffer;
+
         if (transforming.get())
-            return null;
+            return classfileBuffer;
 
         transforming.set(Boolean.TRUE);
 
         ClassNode classNode = byte2ClassNode(classfileBuffer);
 
-        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        ClassWriter cw = new ClassWriter(0);
         classNode.accept(cw);
 
         transforming.set(Boolean.FALSE);
@@ -69,6 +73,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
         int lineNumber = -1;
         TypeInsnNode newInsn = null;
         LabelNode firstLabel = null, lastLabel = null;
+        boolean hasMethodInsn = false;
         while (iterator.hasNext()) {
             AbstractInsnNode insnNode = iterator.next();
             int opcode = insnNode.getOpcode();
@@ -92,6 +97,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
             }
 
             if (insnNode instanceof MethodInsnNode) {
+                hasMethodInsn = true;
                 MethodInsnNode methodInsnNode = (MethodInsnNode) insnNode;
 
                 InsnList il = recordContextInsnList(methodInsnNode.owner, methodInsnNode.name, opcode, lineNumber);
@@ -110,6 +116,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
             }
 
             if (insnNode instanceof InvokeDynamicInsnNode) {
+                hasMethodInsn = true;
                 InvokeDynamicInsnNode invokeDynamicInsnNode = (InvokeDynamicInsnNode) insnNode;
                 InsnList il = recordContextInsnList("", invokeDynamicInsnNode.name, opcode, lineNumber);
                 insnList.insert(insnNode.getPrevious(), il);
@@ -120,8 +127,8 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
             }
         }
 
-        /*if (hasMethodInsn)
-            methodNode.maxStack += 4;*/
+        if (hasMethodInsn)
+            methodNode.maxStack += 4;
 
         if (methodNode.tryCatchBlocks.size() == 0)
             return;
@@ -130,11 +137,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
         for (TryCatchBlockNode tryCatchBlock : methodNode.tryCatchBlocks) {
             if (tryCatchBlock.type == null) continue;
 
-            if (!hasExceptionHandler) {
-                /*methodNode.maxLocals++;*/
-                hasExceptionHandler = true;
-            }
-
+            hasExceptionHandler = true;
             AbstractInsnNode insnNode = tryCatchBlock.handler.getNext();
             while (insnNode instanceof LineNumberNode ||
                     insnNode instanceof FrameNode ||
@@ -162,6 +165,8 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                     "getCurrentContext", "()L" + METHOD_CALL_CONTEXT_NAME + ";", false));
             il.add(new VarInsnNode(ASTORE, methodNode.maxLocals));
             insnList.insert(il);
+
+            methodNode.maxLocals++;
         }
     }
 
@@ -171,11 +176,15 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
         il.add(new LdcInsnNode(name));
         il.add(new LdcInsnNode(MethodCallContext.getMethodType(opcode, name)));
         il.add(new LdcInsnNode(Integer.valueOf(line)));
-        il.add(new MethodInsnNode(INVOKESTATIC, METHOD_CALL_CONTEXT_NAME,
-                "createContext", "()L" + METHOD_CALL_CONTEXT_NAME + ";", false));
+        il.add(new MethodInsnNode(
+                INVOKESTATIC,
+                METHOD_CALL_CONTEXT_NAME,
+                "createContext",
+                "(Ljava/lang/String;Ljava/lang/String;II)L" + METHOD_CALL_CONTEXT_NAME + ";",
+                false));
 
         il.add(new MethodInsnNode(INVOKEVIRTUAL, METHOD_CALL_CONTEXT_NAME,
-                "record", "(L" + METHOD_CALL_CONTEXT_NAME + ";)V", false));
+                "record", "()V", false));
 
         return il;
     }
@@ -206,25 +215,27 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
 
         MonitorMethodCallTransformer transformer = new MonitorMethodCallTransformer();
 
-        ClassVisitor cv;
         if (debug) {
-            cv = new ClassWriter(/*ClassWriter.COMPUTE_FRAMES | */ClassWriter.COMPUTE_MAXS);
-        } else {
-            cv = new TraceClassVisitor(cw, new PrintWriter(System.out));
-        }
-        ClassNode classNode = transformer.byte2ClassNode(classfileBuffer);
-        classNode.accept(cv);
+            ClassWriter classWriter = new ClassWriter(/*ClassWriter.COMPUTE_FRAMES | */ 0);
+            ClassVisitor cv = new CheckClassAdapter(classWriter);
 
-        if (!debug) return;
+            ClassNode classNode = transformer.byte2ClassNode(classfileBuffer);
+            classNode.accept(cv);
 
-        classfileBuffer = ((ClassWriter) cv).toByteArray();
-        class TransformerClassLoader extends ClassLoader {
-            public Class defineClass(String name, byte[] classfileBuffer) {
-                return defineClass(name, classfileBuffer, 0, classfileBuffer.length);
+            classfileBuffer = classWriter.toByteArray();
+            class TransformerClassLoader extends ClassLoader {
+                public Class defineClass(String name, byte[] classfileBuffer) {
+                    return defineClass(name, classfileBuffer, 0, classfileBuffer.length);
+                }
             }
+            Class clazz = (new TransformerClassLoader()).defineClass("CallGraphTest", classfileBuffer);
+            Method method = clazz.getMethod("main", String[].class);
+            method.invoke(null, (Object) args);
+        } else {
+            ClassVisitor cv = new TraceClassVisitor(cw, new PrintWriter(System.out));
+
+            ClassNode classNode = transformer.byte2ClassNode(classfileBuffer);
+            classNode.accept(cv);
         }
-        Class clazz = (new TransformerClassLoader()).defineClass("CallGraphTest", classfileBuffer);
-        Method method = clazz.getMethod("main", String[].class);
-        method.invoke(null, (Object) args);
     }
 }

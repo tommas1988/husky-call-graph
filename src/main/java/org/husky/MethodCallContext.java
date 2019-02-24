@@ -1,9 +1,18 @@
 package org.husky;
 
+import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.WeakHashMap;
 
+import static org.objectweb.asm.Opcodes.*;
+
 public class MethodCallContext {
+    public static final int INIT = 0;
+    public static final int CINIT = 1;
+    public static final int INSTANCE = 2;
+    public static final int STATIC =3;
+    public static final int LAMBDA = 4;
+
     private final int id;
     private final int callerId;
 
@@ -44,7 +53,7 @@ public class MethodCallContext {
         }
 
         int contextId = contextIds.get(thread).increment();
-        MethodCallContext context = new MethodCallContext(contextId, topContext.callerId);
+        MethodCallContext context = new MethodCallContext(contextId, topContext.id);
         context.owner = owner;
         context.name = name;
         context.type = type;
@@ -71,10 +80,33 @@ public class MethodCallContext {
     }
 
     public static int getMethodType(int opcode, String name) {
-        return 0;
+        if ("<init>".equals(name)) {
+            return INIT;
+        } else if ("<cinit>".equals(name)) {
+            return CINIT;
+        } else {
+            switch (opcode) {
+                case INVOKEVIRTUAL:
+                    return INSTANCE;
+                case INVOKESTATIC:
+                    return STATIC;
+                case INVOKEDYNAMIC:
+                    return LAMBDA;
+                default:
+                    return opcode;
+            }
+        }
     }
 
-    public void record() {
+    public void record() throws IOException {
+        Thread thread = Thread.currentThread();
+        RandomAccessFile file;
+        if ((file = recordFiles.get(thread)) == null) {
+            file = new RandomAccessFile("thread_" + thread.getName(), "rw");
+            recordFiles.put(thread, file);
+        }
 
+        String content = id + " " + callerId + " " + owner + " " + name + " " + type + "\n";
+        file.writeChars(content);
     }
 }

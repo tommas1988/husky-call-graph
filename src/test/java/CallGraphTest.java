@@ -5,12 +5,11 @@ public class CallGraphTest {
     }
 
     public void foo() {
-        /*bar();
         int i = intFunc();
-        System.out.println(i);*/
+        System.out.println(i);
 
         try {
-            bar();
+            bar(1, "s");
         } catch (RuntimeException e) {
             System.out.println("RuntimeException");
         } catch (Exception e) {
@@ -18,14 +17,14 @@ public class CallGraphTest {
         }
     }
 
-    public static void bar() {
+    public static void bar(int i, String s) {
         try {
             System.out.println("I`m bar");
         } finally {
             System.out.println("finally");
         }
 
-        /*throw new RuntimeException("Cannot go on");*/
+        throw new RuntimeException("Cannot go on");
     }
 
     public static int intFunc() {
