@@ -36,22 +36,27 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                      ProtectionDomain protectionDomain,
                      byte[] classfileBuffer)
             throws IllegalClassFormatException {
-        if (className.startsWith("java/lang/"))
+        try {
+            if (className.startsWith("java/lang/"))
+                return classfileBuffer;
+
+            if (transforming.get())
+                return classfileBuffer;
+
+            transforming.set(Boolean.TRUE);
+
+            ClassNode classNode = byte2ClassNode(classfileBuffer);
+
+            ClassWriter cw = new ClassWriter(0);
+            classNode.accept(cw);
+
+            transforming.set(Boolean.FALSE);
+
+            return cw.toByteArray();
+        } catch (Exception e) {
+            e.printStackTrace();
             return classfileBuffer;
-
-        if (transforming.get())
-            return classfileBuffer;
-
-        transforming.set(Boolean.TRUE);
-
-        ClassNode classNode = byte2ClassNode(classfileBuffer);
-
-        ClassWriter cw = new ClassWriter(0);
-        classNode.accept(cw);
-
-        transforming.set(Boolean.FALSE);
-
-        return cw.toByteArray();
+        }
     }
 
     private ClassNode byte2ClassNode(byte[] classfileBuffer) {
@@ -103,10 +108,18 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                 InsnList il = recordContextInsnList(methodInsnNode.owner, methodInsnNode.name, opcode, lineNumber);
 
                 if ("<init>".equals(methodInsnNode.name) && newInsn != null) {
-                    insnList.insert(newInsn.getPrevious(), il);
+                    if (newInsn.getPrevious() == null) {
+                        insnList.insert(il);
+                    } else {
+                        insnList.insert(newInsn.getPrevious(), il);
+                    }
                     newInsn = null;
                 } else {
-                    insnList.insert(insnNode.getPrevious(), il);
+                    if (insnNode.getPrevious() == null) {
+                        insnList.insert(il);
+                    } else {
+                        insnList.insert(insnNode.getPrevious(), il);
+                    }
                 }
 
                 il = destroyContextInsnList();
@@ -119,7 +132,12 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                 hasMethodInsn = true;
                 InvokeDynamicInsnNode invokeDynamicInsnNode = (InvokeDynamicInsnNode) insnNode;
                 InsnList il = recordContextInsnList("", invokeDynamicInsnNode.name, opcode, lineNumber);
-                insnList.insert(insnNode.getPrevious(), il);
+                if (insnNode.getPrevious() == null) {
+                    insnList.insert(il);
+                } else {
+                    insnList.insert(insnNode.getPrevious(), il);
+                }
+
                 il = destroyContextInsnList();
                 insnList.insert(insnNode, il);
 
