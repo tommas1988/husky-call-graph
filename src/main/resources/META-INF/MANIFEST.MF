@@ -1,2 +1,3 @@
 Manifest-Version: 1.0
 Premain-Class: org.husky.CallGraphAgent
+Boot-Class-Path: husky-call-graph.jar

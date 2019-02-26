@@ -37,7 +37,12 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                      byte[] classfileBuffer)
             throws IllegalClassFormatException {
         try {
-            if (className.startsWith("java/lang/"))
+            if (className.startsWith("java/") ||
+                    className.startsWith("javax") ||
+                    className.startsWith("jdk") ||
+                    className.startsWith("sun") ||
+                    className.startsWith("com/sun") ||
+                    className.startsWith("org/husky/"))
                 return classfileBuffer;
 
             if (transforming.get())
