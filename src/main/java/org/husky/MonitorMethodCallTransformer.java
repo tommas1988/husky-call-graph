@@ -23,13 +23,6 @@ import static org.objectweb.asm.Opcodes.*;
 public class MonitorMethodCallTransformer implements ClassFileTransformer {
     private static final String METHOD_CALL_CONTEXT_NAME = "org/husky/MethodCallContext";
 
-    private static final ThreadLocal<Boolean> transforming = new ThreadLocal<Boolean>() {
-        @Override
-        protected Boolean initialValue() {
-            return Boolean.FALSE;
-        }
-    };
-
     public byte[] transform(ClassLoader loader,
                      String className,
                      Class<?> classBeingRedefined,
@@ -45,22 +38,16 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                     className.startsWith("org/husky/"))
                 return classfileBuffer;
 
-            if (transforming.get())
-                return classfileBuffer;
-
-            transforming.set(Boolean.TRUE);
-
             ClassNode classNode = byte2ClassNode(classfileBuffer);
 
             ClassWriter cw = new ClassWriter(0);
             classNode.accept(cw);
 
-            transforming.set(Boolean.FALSE);
-
             return cw.toByteArray();
         } catch (Exception e) {
-            e.printStackTrace();
-            return classfileBuffer;
+            IllegalClassFormatException exception = new IllegalClassFormatException();
+            exception.initCause(e);
+            throw exception;
         }
     }
 
