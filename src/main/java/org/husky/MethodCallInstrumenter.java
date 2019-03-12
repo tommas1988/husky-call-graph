@@ -1,94 +1,78 @@
 package org.husky;
 
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.tree.*;
+import org.husky.processor.InstrumentProcessor;
+import org.husky.processor.LogProcessor;
+import org.husky.processor.NullProcessor;
 
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.util.Iterator;
-import java.util.List;
-import java.util.WeakHashMap;
+import java.util.HashMap;
 
 import static org.objectweb.asm.Opcodes.*;
 
 public class MethodCallInstrumenter {
-    public static final int INIT = 0;
-    public static final int CLASS_INIT = 1;
-    public static final int INSTANCE = 2;
-    public static final int STATIC = 3;
-    public static final int LAMBDA = 4;
+    public static final int ROOT_METHOD = -1;
+    public static final int INIT_METHOD = 0;
+    public static final int CLASS_INIT_METHOD = 1;
+    public static final int INSTANCE_METHOD = 2;
+    public static final int STATIC_METHOD = 3;
+    public static final int LAMBDA_METHOD = 4;
 
-    private static final String INSTRUMENTER_NAME = "org/husky/MethodCallInstrumenter";
-    private static final String METHOD_CALL_ENTRY_NAME = INSTRUMENTER_NAME + "$MethodCallEntry";
+    private HashMap<Long, MethodCallContext> contextStacks = new HashMap<Long, MethodCallContext>();
 
-    private static MethodCallInstrumenter instance;
+    private boolean instrumentJdkMethod = false;
+    private long instrumentThread = 0;
+    private String instrumentStartPoint;
+    private String instrumentEndPoint;
+    private InstrumentProcessor processor;
 
     private static boolean instrumenting = false;
 
-    private static final MethodCallEntry ROOT_METHOD_CALL = new MethodCallEntry(0, null);
-
-    private WeakHashMap<Thread, MethodCallIdGenerator> idGenerator;
-    private WeakHashMap<Thread, MethodCallEntry> methodCallStack;
-    private WeakHashMap<Thread, RandomAccessFile> recordFiles;
-
-    private static class MethodCallIdGenerator {
-        private int id = 0;
-
-        public int getId() {
-            return ++id;
-        }
+    public MethodCallInstrumenter() {
+        processor = new NullProcessor();
     }
 
-    public static class MethodCallEntry {
-        public final int id;
-        public final MethodCallEntry prev;
-
-        public MethodCallEntry(int id, MethodCallEntry prev) {
-               this.id = id;
-               this.prev = prev;
-        }
-    }
-
-    private boolean instrumentJdkMethod;
-
-    public MethodCallInstrumenter(boolean instrumentJdkMethod) {
+    public void setInstrumentJdkMethod(boolean instrumentJdkMethod) {
         this.instrumentJdkMethod = instrumentJdkMethod;
-
-        idGenerator = new WeakHashMap<Thread, MethodCallIdGenerator>();
-        methodCallStack = new WeakHashMap<Thread, MethodCallEntry>();
-        recordFiles = new WeakHashMap<Thread, RandomAccessFile>();
-
-        instance = this;
     }
 
-    public static void instrumentMethodCallStart(String owner, String name, int opcode, int line) throws IOException {
-        instance.methodCallStart(owner, name, opcode, line);
+    public void setInstrumentThread(long instrumentThread) {
+        this.instrumentThread = instrumentThread;
     }
 
-    public static void instrumentMethodCallFinish() {
-        instance.methodCallFinish();
+    public void setInstrumentStartPoint(String instrumentStartPoint) {
+        this.instrumentStartPoint = instrumentStartPoint;
     }
 
-    public static MethodCallEntry getCurrentMethodCallEntry() {
-        return instance.getTopMethodCallEntry();
+    public void setInstrumentEndPoint(String instrumentEndPoint) {
+        this.instrumentEndPoint = instrumentEndPoint;
     }
 
-    public static void setCurrentMethodCallEntry(MethodCallEntry entry) {
-        instance.setTopMethodCallEntry(entry);
+    public void setProcessor(String processorName) {
+        if (processorName.equals(InstrumentProcessor.LOG_PROCESSOR)) {
+            processor = new LogProcessor();
+            return;
+        }
+
+        throw new IllegalArgumentException(processorName);
     }
 
-    public void methodCallStart(String owner, String name, int opcode, int line) throws IOException {
+    public void methodCallStart(String callerClass,
+                                String callerMethod,
+                                String calleeClass,
+                                String calleeMethod,
+                                int opcode,
+                                int line)
+    {
         if (instrumentJdkMethod) {
             synchronized (this) {
                 if (instrumenting)
                     return;
 
                 instrumenting = true;
-                doMethodCallStart(owner, name, opcode, line);
+                doMethodCallStart(callerClass, callerMethod, calleeClass, calleeMethod, opcode, line);
                 instrumenting = false;
             }
         } else {
-            doMethodCallStart(owner, name, opcode, line);
+            doMethodCallStart(callerClass, callerMethod, calleeClass, calleeMethod, opcode, line);
         }
     }
 
@@ -107,253 +91,134 @@ public class MethodCallInstrumenter {
         }
     }
 
-    public MethodCallEntry getTopMethodCallEntry() {
-        if (instrumentJdkMethod) {
-            synchronized (this) {
-                if (instrumenting)
-                    return null;
-
-                instrumenting = true;
-                MethodCallEntry entry = doGetCurrentMethodCallEntry();
-                instrumenting = false;
-
-                return entry;
-            }
-        } else {
-            return doGetCurrentMethodCallEntry();
-        }
-    }
-
-    public void setTopMethodCallEntry(MethodCallEntry entry) {
+    public void methodThrowException() {
         if (instrumentJdkMethod) {
             synchronized (this) {
                 if (instrumenting)
                     return;
 
                 instrumenting = true;
-                doSetTopMethodCallEntry(entry);
+                doMethodThrowException();
                 instrumenting = false;
             }
         } else {
-            doSetTopMethodCallEntry(entry);
+            doMethodThrowException();
         }
     }
 
-    private void doMethodCallStart(String owner, String name, int opcode, int line) throws IOException {
-        Thread thread = Thread.currentThread();
-        MethodCallIdGenerator idGenerator;
-        if ((idGenerator = this.idGenerator.get(thread)) == null) {
-            idGenerator = new MethodCallIdGenerator();
+    public void methodCatchException(MethodCallContext context) {
+        if (instrumentJdkMethod) {
+            synchronized (this) {
+                if (instrumenting)
+                    return;
 
-            this.idGenerator.put(thread, idGenerator);
-            methodCallStack.put(thread, ROOT_METHOD_CALL);
-            recordFiles.put(thread, new RandomAccessFile("thread_" + thread.getName(), "rw"));
+                instrumenting = true;
+                doMethodCatchException(context);
+                instrumenting = false;
+            }
+        } else {
+            doMethodCatchException(context);
         }
+    }
 
-        MethodCallEntry calleeEntry, callerEntry;
-        int calleeId = idGenerator.getId();
+    public MethodCallContext getOrCreateCurrentCallContext(String className, String methodName) {
+        if (instrumentJdkMethod) {
+            synchronized (this) {
+                if (instrumenting)
+                    return null;
 
-        callerEntry = methodCallStack.get(thread);
-        calleeEntry = new MethodCallEntry(calleeId, callerEntry);
-        methodCallStack.put(thread, calleeEntry);
+                instrumenting = true;
+                MethodCallContext context = contextStackTop(className, methodName);
+                instrumenting = false;
+
+                return context;
+            }
+        } else {
+            return contextStackTop(className, methodName);
+        }
+    }
+
+    private boolean shouldInstrument(Long tid) {
+        return instrumentThread == 0 || tid == instrumentThread;
+    }
+
+    private void doMethodCallStart(String callerClass,
+                                   String callerMethod,
+                                   String calleeClass,
+                                   String calleeMethod,
+                                   int opcode,
+                                   int line)
+    {
+        Thread thread = Thread.currentThread();
+        Long tid = thread.getId();
+
+        MethodCallContext callerContext, calleeContext;
+        callerContext = contextStackTop(tid, callerClass, callerMethod);
 
         int methodType;
-        if ("<init>".equals(name)) {
-            methodType = INIT;
-        } else if ("<cinit>".equals(name)) {
-            methodType = CLASS_INIT;
+        if ("<init>".equals(calleeMethod)) {
+            methodType = INIT_METHOD;
+        } else if ("<cinit>".equals(calleeMethod)) {
+            methodType = CLASS_INIT_METHOD;
         } else {
             switch (opcode) {
                 case INVOKEVIRTUAL:
-                    methodType = INSTANCE;
+                    methodType = INSTANCE_METHOD;
                     break;
                 case INVOKESTATIC:
-                    methodType = STATIC;
+                    methodType = STATIC_METHOD;
                     break;
                 case INVOKEDYNAMIC:
-                    methodType = LAMBDA;
+                    methodType = LAMBDA_METHOD;
                     break;
                 default:
                     methodType = opcode;
             }
         }
 
-        String content = calleeId + " " + callerEntry.id + " " + owner + " " + name + " " + methodType + "\n";
+        calleeContext = new MethodCallContext(callerContext, calleeClass, calleeMethod, methodType, line);
+        contextStacks.put(tid, calleeContext);
 
-        RandomAccessFile file = recordFiles.get(thread);
-        file.writeChars(content);
+        if (shouldInstrument(tid))
+            processor.processCallStart(calleeContext);
     }
 
     private void doMethodCallFinish() {
-        Thread thread = Thread.currentThread();
-        methodCallStack.put(thread, methodCallStack.get(thread).prev);
+        Long tid = Thread.currentThread().getId();
+        MethodCallContext context = contextStacks.get(tid);
+        contextStacks.put(tid, context.prev);
+
+        if (shouldInstrument(tid))
+            processor.processCallFinish(context);
     }
 
-    private MethodCallEntry doGetCurrentMethodCallEntry() {
-        Thread thread = Thread.currentThread();
-        MethodCallEntry entry;
-        if ((entry = methodCallStack.get(thread)) == null) {
-            entry = ROOT_METHOD_CALL;
-            methodCallStack.put(thread, entry);
-        }
-        return entry;
+    private void doMethodThrowException() {
+        Long tid = Thread.currentThread().getId();
+        MethodCallContext context = contextStacks.get(tid);
+
+        if (shouldInstrument(tid))
+            processor.processThrowException(context);
     }
 
-    private void doSetTopMethodCallEntry(MethodCallEntry entry) {
-        Thread thread = Thread.currentThread();
-        methodCallStack.put(thread, entry);
+    private void doMethodCatchException(MethodCallContext context) {
+        Long tid = Thread.currentThread().getId();
+        contextStacks.put(tid, context);
+
+        if (shouldInstrument(tid))
+            processor.processCatchException(context);
     }
 
-    public ClassNode injectInstrumentCodes(byte[] classfileBuffer) {
-        ClassReader cr = new ClassReader(classfileBuffer);
-        ClassNode classNode = new ClassNode(ASM7);
-
-        cr.accept(classNode, ClassReader.SKIP_FRAMES);
-
-        for (MethodNode methodNode : classNode.methods) {
-            injectInspector(methodNode);
-        }
-
-        return classNode;
+    private MethodCallContext contextStackTop(String className, String methodName) {
+        return contextStackTop(Thread.currentThread().getId(), className, methodName);
     }
 
-    private void injectInspector(MethodNode methodNode) {
-        InsnList insnList = methodNode.instructions;
-        Iterator<AbstractInsnNode> iterator = insnList.iterator();
-        int lineNumber = -1;
-        TypeInsnNode newInsn = null;
-        LabelNode firstLabel = null, lastLabel = null;
-        boolean hasMethodInsn = false;
-        while (iterator.hasNext()) {
-            AbstractInsnNode insnNode = iterator.next();
-            int opcode = insnNode.getOpcode();
-
-            if (insnNode instanceof LabelNode) {
-                if (firstLabel == null) {
-                    firstLabel = (LabelNode) insnNode;
-                }
-                lastLabel = (LabelNode) insnNode;
-                continue;
-            }
-
-            if (insnNode instanceof LineNumberNode) {
-                lineNumber = ((LineNumberNode) insnNode).line;
-                continue;
-            }
-
-            if (insnNode instanceof TypeInsnNode) {
-                newInsn = (TypeInsnNode) insnNode;
-                continue;
-            }
-
-            if (insnNode instanceof MethodInsnNode) {
-                hasMethodInsn = true;
-                MethodInsnNode methodInsnNode = (MethodInsnNode) insnNode;
-
-                InsnList il = instrumentMethodCallStartInsnList(methodInsnNode.owner, methodInsnNode.name, opcode, lineNumber);
-
-                if ("<init>".equals(methodInsnNode.name) && newInsn != null) {
-                    if (newInsn.getPrevious() == null) {
-                        insnList.insert(il);
-                    } else {
-                        insnList.insert(newInsn.getPrevious(), il);
-                    }
-                    newInsn = null;
-                } else {
-                    if (insnNode.getPrevious() == null) {
-                        insnList.insert(il);
-                    } else {
-                        insnList.insert(insnNode.getPrevious(), il);
-                    }
-                }
-
-                il = instrumentMethodCallFinishInsnList();
-                insnList.insert(insnNode, il);
-
-                continue;
-            }
-
-            if (insnNode instanceof InvokeDynamicInsnNode) {
-                hasMethodInsn = true;
-                InvokeDynamicInsnNode invokeDynamicInsnNode = (InvokeDynamicInsnNode) insnNode;
-                InsnList il = instrumentMethodCallStartInsnList("", invokeDynamicInsnNode.name, opcode, lineNumber);
-                if (insnNode.getPrevious() == null) {
-                    insnList.insert(il);
-                } else {
-                    insnList.insert(insnNode.getPrevious(), il);
-                }
-
-                il = instrumentMethodCallFinishInsnList();
-                insnList.insert(insnNode, il);
-
-                continue;
-            }
+    private MethodCallContext contextStackTop(Long tid, String className, String methodName) {
+        MethodCallContext context;
+        if ((context = contextStacks.get(tid)) == null) {
+            context = new MethodCallContext(null, className, methodName, ROOT_METHOD, 0);
+            contextStacks.put(tid, context);
         }
 
-        if (hasMethodInsn)
-            methodNode.maxStack += 4;
-
-        if (methodNode.tryCatchBlocks.size() == 0)
-            return;
-
-        boolean hasExceptionHandler = false;
-        for (TryCatchBlockNode tryCatchBlock : methodNode.tryCatchBlocks) {
-            if (tryCatchBlock.type == null) continue;
-
-            hasExceptionHandler = true;
-            AbstractInsnNode insnNode = tryCatchBlock.handler.getNext();
-            while (insnNode instanceof LineNumberNode ||
-                    insnNode instanceof FrameNode ||
-                    insnNode instanceof LabelNode)
-                insnNode = insnNode.getNext();
-
-            InsnList il = new InsnList();
-            il.add(new VarInsnNode(ALOAD, methodNode.maxLocals));
-            il.add(new MethodInsnNode(INVOKESTATIC, INSTRUMENTER_NAME,
-                    "setCurrentMethodCallEntry", "(L" + METHOD_CALL_ENTRY_NAME + ";)V", false));
-            insnList.insert(insnNode, il);
-        }
-
-        if (hasExceptionHandler) {
-            List<LocalVariableNode> variables = methodNode.localVariables;
-            variables.add(new LocalVariableNode("$methodCallEntry",
-                    "L" + METHOD_CALL_ENTRY_NAME + ";",
-                    null,
-                    firstLabel,
-                    lastLabel,
-                    methodNode.maxLocals));
-
-            InsnList il = new InsnList();
-            il.add(new MethodInsnNode(INVOKESTATIC, INSTRUMENTER_NAME,
-                    "getCurrentMethodCallEntry", "()L" + METHOD_CALL_ENTRY_NAME + ";", false));
-            il.add(new VarInsnNode(ASTORE, methodNode.maxLocals));
-            insnList.insert(il);
-
-            methodNode.maxLocals++;
-        }
-    }
-
-    private InsnList instrumentMethodCallStartInsnList(String owner, String name, int opcode, int line) {
-        InsnList il = new InsnList();
-        il.add(new LdcInsnNode(owner));
-        il.add(new LdcInsnNode(name));
-        il.add(new LdcInsnNode(opcode));
-        il.add(new LdcInsnNode(Integer.valueOf(line)));
-        il.add(new MethodInsnNode(
-                INVOKESTATIC,
-                INSTRUMENTER_NAME,
-                "instrumentMethodCallStart",
-                "(Ljava/lang/String;Ljava/lang/String;II)V",
-                false));
-
-        return il;
-    }
-
-    private InsnList instrumentMethodCallFinishInsnList() {
-        InsnList il = new InsnList();
-        il.add(new MethodInsnNode(INVOKESTATIC, INSTRUMENTER_NAME,
-                "instrumentMethodCallFinish", "()V", false));
-
-        return il;
+        return context;
     }
 }
