@@ -8,6 +8,7 @@ public class AgentOption {
     private static final String CAPTURE_END = "captureEnd";
     private static final String PROCESSOR = "processor";
     private static final String OUTPUT_TRANSFORMED_CLASS = "outputTransformedClass";
+    private static final String TRACE_TRANSFORMED_CLASS = "traceTransformedClass";
     private static final String CHECK_TRANSFORMED_CLASS = "checkTransformedClass";
 
     private boolean debug = false;
@@ -17,6 +18,7 @@ public class AgentOption {
     private String captureEnd;
     private String processor;
     private String outputTransformedClass;
+    private String traceTransformedClass;
     private String checkTransformedClass;
 
     public AgentOption(String options) {
@@ -52,6 +54,10 @@ public class AgentOption {
         return outputTransformedClass;
     }
 
+    public String getTraceTransformedClass() {
+        return traceTransformedClass;
+    }
+
     public String getCheckTransformedClass() {
         return checkTransformedClass;
     }
@@ -77,6 +83,8 @@ public class AgentOption {
                 processor = parseArgumentOption(part);
             } else if (part.startsWith(OUTPUT_TRANSFORMED_CLASS)) {
                 outputTransformedClass = parseArgumentOption(part);
+            } else if (part.startsWith(TRACE_TRANSFORMED_CLASS)) {
+                traceTransformedClass = parseArgumentOption(part);
             } else if (part.startsWith(CHECK_TRANSFORMED_CLASS)) {
                 checkTransformedClass = parseArgumentOption(part);
             }

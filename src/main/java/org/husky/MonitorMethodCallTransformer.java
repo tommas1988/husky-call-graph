@@ -7,8 +7,7 @@ import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.tree.*;
 
-import java.io.FileNotFoundException;
-import java.io.PrintWriter;
+import java.io.*;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.IllegalClassFormatException;
 import java.security.ProtectionDomain;
@@ -24,6 +23,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
     private boolean debug = false;
     private boolean instrumentJdkMethod = false;
     private String outputTransformedClass;
+    private String traceTransformedClass;
     private String checkTransformedClass;
 
     private static MethodCallInstrumenter instrumenter;
@@ -32,6 +32,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
         debug = agentOption.isDebug();
         instrumentJdkMethod = agentOption.isIncludeJdkMethod();
         outputTransformedClass = agentOption.getOutputTransformedClass();
+        traceTransformedClass = agentOption.getTraceTransformedClass();
         checkTransformedClass = agentOption.getCheckTransformedClass();
 
         instrumenter = new MethodCallInstrumenter();
@@ -51,6 +52,10 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                      byte[] classfileBuffer)
             throws IllegalClassFormatException {
         try {
+            if (classBeingRedefined != null) {
+                return null;
+            }
+
             if (className.startsWith("org/husky/"))
                 return null;
 
@@ -63,7 +68,8 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
 
             if (debug) {
                 ClassVisitor cv = cw;
-                if (outputTransformedClass != null && className.equals(outputTransformedClass)) {
+
+                if (traceTransformedClass != null && className.equals(traceTransformedClass)) {
                     cv = getTraceClassVisitor(cv, className);
                 }
 
@@ -72,6 +78,10 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                 }
 
                 classNode.accept(cv);
+
+                if (outputTransformedClass != null && className.equals(outputTransformedClass)) {
+                    outputTransformedClass(cw.toByteArray(), className);
+                }
             } else {
                 classNode.accept(cw);
             }
@@ -87,13 +97,16 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
         }
     }
 
-    private ClassVisitor getTraceClassVisitor(ClassVisitor cv, String className) {
-        String outputFile = className.replaceAll("/", "_") + ".java";
-        try {
-            return new TraceClassVisitor(cv, new PrintWriter(outputFile));
-        } catch (FileNotFoundException e) {
-            throw new IllegalArgumentException(outputFile);
-        }
+    private void outputTransformedClass(byte[] bytes, String className) throws IOException {
+        String outputFile = className.replaceAll("/", "_") + ".class";
+        OutputStream out = new BufferedOutputStream(new FileOutputStream(outputFile));
+        out.write(bytes);
+        out.flush();
+    }
+
+    private ClassVisitor getTraceClassVisitor(ClassVisitor cv, String className) throws FileNotFoundException {
+        String traceFile = className.replaceAll("/", "_") + ".java";
+        return new TraceClassVisitor(cv, new PrintWriter(traceFile));
     }
 
     public static void instrumentMethodCallStart(String callerClass,
@@ -132,7 +145,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
         ClassReader cr = new ClassReader(classfileBuffer);
         ClassNode classNode = new ClassNode(ASM7);
 
-        cr.accept(classNode, ClassReader.SKIP_FRAMES);
+        cr.accept(classNode, ClassReader.EXPAND_FRAMES);
 
         for (MethodNode methodNode : classNode.methods) {
             injectInspector(methodNode, classNode.name);
@@ -192,18 +205,10 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                         opcode, lineNumber);
 
                 if ("<init>".equals(methodInsnNode.name) && newInsn != null) {
-                    if (newInsn.getPrevious() == null) {
-                        insnList.insert(il);
-                    } else {
-                        insnList.insert(newInsn.getPrevious(), il);
-                    }
+                    insertInsnListBefore(il, newInsn, insnList);
                     newInsn = null;
                 } else {
-                    if (insnNode.getPrevious() == null) {
-                        insnList.insert(il);
-                    } else {
-                        insnList.insert(insnNode.getPrevious(), il);
-                    }
+                    insertInsnListBefore(il, insnNode, insnList);
                 }
 
                 il = instrumentMethodCallFinishInsnList();
@@ -219,11 +224,8 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                         className, methodNode.name,
                         "__lambda__", invokeDynamicInsnNode.name,
                         opcode, lineNumber);
-                if (insnNode.getPrevious() == null) {
-                    insnList.insert(il);
-                } else {
-                    insnList.insert(insnNode.getPrevious(), il);
-                }
+
+                insertInsnListBefore(il, insnNode, insnList);
 
                 il = instrumentMethodCallFinishInsnList();
                 insnList.insert(insnNode, il);
@@ -276,6 +278,16 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
             insnList.insert(il);
 
             methodNode.maxLocals++;
+        }
+    }
+
+    private void insertInsnListBefore(InsnList il, AbstractInsnNode target, InsnList insnList) {
+        AbstractInsnNode prevTarget = target.getPrevious();
+
+        if (prevTarget == null) {
+            insnList.insert(il);
+        } else {
+            insnList.insert(prevTarget, il);
         }
     }
 
