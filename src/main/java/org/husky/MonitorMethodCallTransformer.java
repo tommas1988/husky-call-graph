@@ -145,7 +145,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
         ClassReader cr = new ClassReader(classfileBuffer);
         ClassNode classNode = new ClassNode(ASM7);
 
-        cr.accept(classNode, ClassReader.EXPAND_FRAMES);
+        cr.accept(classNode, 0);
 
         for (MethodNode methodNode : classNode.methods) {
             injectInspector(methodNode, classNode.name);
@@ -156,14 +156,64 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
 
     private void injectInspector(MethodNode methodNode, String className) {
         InsnList insnList = methodNode.instructions;
+
+        boolean hasExceptionHandler = false;
+        if (methodNode.tryCatchBlocks.size() > 0) {
+            for (TryCatchBlockNode tryCatchBlock : methodNode.tryCatchBlocks) {
+                if (tryCatchBlock.type == null) continue;
+
+                hasExceptionHandler = true;
+                AbstractInsnNode insnNode = tryCatchBlock.handler.getNext();
+                while (insnNode instanceof LineNumberNode ||
+                        insnNode instanceof FrameNode ||
+                        insnNode instanceof LabelNode)
+                    insnNode = insnNode.getNext();
+
+                InsnList il = new InsnList();
+                il.add(new VarInsnNode(ALOAD, methodNode.maxLocals));
+                il.add(new MethodInsnNode(INVOKESTATIC, TRANSFORMER_CLASS,
+                        "instrumetCatchException", "(L" + CALL_CONTEXT_CLASS + ";)V", false));
+                insnList.insert(insnNode, il);
+            }
+        }
+
+        if (hasExceptionHandler) {
+            InsnList il = new InsnList();
+            il.add(new LdcInsnNode(className));
+            il.add(new LdcInsnNode(methodNode.name));
+            il.add(new MethodInsnNode(INVOKESTATIC, TRANSFORMER_CLASS,
+                    "getOrCreateCurrentCallContext",
+                    "(Ljava/lang/String;Ljava/lang/String;)L" + CALL_CONTEXT_CLASS + ";",
+                    false));
+            il.add(new VarInsnNode(ASTORE, methodNode.maxLocals));
+            insnList.insert(il);
+        }
+
         Iterator<AbstractInsnNode> iterator = insnList.iterator();
         int lineNumber = -1;
         TypeInsnNode newInsn = null;
         LabelNode firstLabel = null, lastLabel = null;
-        boolean hasMethodInsn = false;
+        boolean hasMethodInsn = false, firstFrame = true;
+
         while (iterator.hasNext()) {
             AbstractInsnNode insnNode = iterator.next();
             int opcode = insnNode.getOpcode();
+
+            if (insnNode instanceof FrameNode && hasExceptionHandler && firstFrame) {
+                FrameNode frameNode = (FrameNode) insnNode;
+                if (frameNode.type != F_NEW) {
+                    throw new RuntimeException("Not the first frame node");
+                }
+
+                int num = methodNode.maxLocals - frameNode.local.size();
+                for (int i = num; i > 0; i--) {
+                    frameNode.local.add(null);
+                }
+                frameNode.local.add(CALL_CONTEXT_CLASS);
+
+                firstFrame = false;
+                continue;
+            }
 
             if (insnNode instanceof LabelNode) {
                 if (firstLabel == null) {
@@ -237,27 +287,6 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
         if (hasMethodInsn)
             methodNode.maxStack += 6;
 
-        if (methodNode.tryCatchBlocks.size() == 0)
-            return;
-
-        boolean hasExceptionHandler = false;
-        for (TryCatchBlockNode tryCatchBlock : methodNode.tryCatchBlocks) {
-            if (tryCatchBlock.type == null) continue;
-
-            hasExceptionHandler = true;
-            AbstractInsnNode insnNode = tryCatchBlock.handler.getNext();
-            while (insnNode instanceof LineNumberNode ||
-                    insnNode instanceof FrameNode ||
-                    insnNode instanceof LabelNode)
-                insnNode = insnNode.getNext();
-
-            InsnList il = new InsnList();
-            il.add(new VarInsnNode(ALOAD, methodNode.maxLocals));
-            il.add(new MethodInsnNode(INVOKESTATIC, TRANSFORMER_CLASS,
-                    "instrumetCatchException", "(L" + CALL_CONTEXT_CLASS + ";)V", false));
-            insnList.insert(insnNode, il);
-        }
-
         if (hasExceptionHandler) {
             List<LocalVariableNode> variables = methodNode.localVariables;
             variables.add(new LocalVariableNode("$methodCallEntry",
@@ -266,16 +295,6 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                     firstLabel,
                     lastLabel,
                     methodNode.maxLocals));
-
-            InsnList il = new InsnList();
-            il.add(new LdcInsnNode(className));
-            il.add(new LdcInsnNode(methodNode.name));
-            il.add(new MethodInsnNode(INVOKESTATIC, TRANSFORMER_CLASS,
-                    "getOrCreateCurrentCallContext",
-                    "(Ljava/lang/String;Ljava/lang/String;)L" + CALL_CONTEXT_CLASS + ";",
-                    false));
-            il.add(new VarInsnNode(ASTORE, methodNode.maxLocals));
-            insnList.insert(il);
 
             methodNode.maxLocals++;
         }
