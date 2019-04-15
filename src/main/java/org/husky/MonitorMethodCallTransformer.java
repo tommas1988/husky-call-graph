@@ -145,7 +145,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
         ClassReader cr = new ClassReader(classfileBuffer);
         ClassNode classNode = new ClassNode(ASM7);
 
-        cr.accept(classNode, 0);
+        cr.accept(classNode, ClassReader.EXPAND_FRAMES);
 
         for (MethodNode methodNode : classNode.methods) {
             injectInspector(methodNode, classNode.name);
@@ -156,8 +156,13 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
 
     private void injectInspector(MethodNode methodNode, String className) {
         InsnList insnList = methodNode.instructions;
-
+        Iterator<AbstractInsnNode> iterator = insnList.iterator();
+        int lineNumber = -1;
+        TypeInsnNode newInsn = null;
+        LabelNode firstLabel = null, lastLabel = null;
+        int stackNum = 0;
         boolean hasExceptionHandler = false;
+
         if (methodNode.tryCatchBlocks.size() > 0) {
             for (TryCatchBlockNode tryCatchBlock : methodNode.tryCatchBlocks) {
                 if (tryCatchBlock.type == null) continue;
@@ -187,31 +192,30 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                     false));
             il.add(new VarInsnNode(ASTORE, methodNode.maxLocals));
             insnList.insert(il);
-        }
 
-        Iterator<AbstractInsnNode> iterator = insnList.iterator();
-        int lineNumber = -1;
-        TypeInsnNode newInsn = null;
-        LabelNode firstLabel = null, lastLabel = null;
-        boolean hasMethodInsn = false, firstFrame = true;
+            stackNum = 2;
+        }
 
         while (iterator.hasNext()) {
             AbstractInsnNode insnNode = iterator.next();
             int opcode = insnNode.getOpcode();
 
-            if (insnNode instanceof FrameNode && hasExceptionHandler && firstFrame) {
+            if (insnNode instanceof FrameNode && hasExceptionHandler) {
                 FrameNode frameNode = (FrameNode) insnNode;
-                if (frameNode.type != F_NEW) {
-                    throw new RuntimeException("Not the first frame node");
-                }
 
-                int num = methodNode.maxLocals - frameNode.local.size();
+                int localNum = 0;
+                for (Object item : frameNode.local) {
+                    if (item.equals(LONG) || item.equals(DOUBLE))
+                        localNum += 2;
+                    else
+                        localNum++;
+                }
+                int num = methodNode.maxLocals - localNum;
                 for (int i = num; i > 0; i--) {
-                    frameNode.local.add(null);
+                    frameNode.local.add(TOP);
                 }
                 frameNode.local.add(CALL_CONTEXT_CLASS);
 
-                firstFrame = false;
                 continue;
             }
 
@@ -228,7 +232,7 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                 continue;
             }
 
-            if (insnNode instanceof TypeInsnNode) {
+            if (insnNode instanceof TypeInsnNode && opcode == NEW) {
                 newInsn = (TypeInsnNode) insnNode;
                 continue;
             }
@@ -244,10 +248,11 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
             if (insnNode instanceof MethodInsnNode) {
                 MethodInsnNode methodInsnNode = (MethodInsnNode) insnNode;
 
-                if (!instrumentJdkMethod && isInstrumentJdkClass(methodInsnNode.owner))
+                if (methodInsnNode.owner.startsWith("org/husky/"))
                     continue;
 
-                hasMethodInsn = true;
+                if (!instrumentJdkMethod && isInstrumentJdkClass(methodInsnNode.owner))
+                    continue;
 
                 InsnList il = instrumentMethodCallStartInsnList(
                         className, methodNode.name,
@@ -264,11 +269,12 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                 il = instrumentMethodCallFinishInsnList();
                 insnList.insert(insnNode, il);
 
+                stackNum = 6;
+
                 continue;
             }
 
             if (insnNode instanceof InvokeDynamicInsnNode) {
-                hasMethodInsn = true;
                 InvokeDynamicInsnNode invokeDynamicInsnNode = (InvokeDynamicInsnNode) insnNode;
                 InsnList il = instrumentMethodCallStartInsnList(
                         className, methodNode.name,
@@ -280,12 +286,14 @@ public class MonitorMethodCallTransformer implements ClassFileTransformer {
                 il = instrumentMethodCallFinishInsnList();
                 insnList.insert(insnNode, il);
 
+                stackNum = 6;
+
                 continue;
             }
         }
 
-        if (hasMethodInsn)
-            methodNode.maxStack += 6;
+
+        methodNode.maxStack += stackNum;
 
         if (hasExceptionHandler) {
             List<LocalVariableNode> variables = methodNode.localVariables;

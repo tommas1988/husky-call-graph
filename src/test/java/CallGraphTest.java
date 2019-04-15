@@ -32,7 +32,8 @@ public class CallGraphTest {
     }
 
     public static void main(String[] args) {
-        CallGraphTest o = new CallGraphTest("arg");
+        CallGraphTest o = new CallGraphTest(args.length > 0 ? args[0] : "args");
+        /*CallGraphTest o = new CallGraphTest("args");*/
         o.foo();
 
         /*SubClass.staticMethod(0);
